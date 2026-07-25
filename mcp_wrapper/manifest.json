@@ -1,0 +1,22 @@
+{
+  "name": "nexus-npm-package-ws-has-241560546-weekly-down",
+  "description_variants": {
+    "claude": "Stateful WebSocket session manager with Shannon entropy-based frame novelty scoring — open persistent connections, send/receive typed frames, and detect schema drift in real-time streams as structured tool outputs.",
+    "gpt": "MCP tool surface for WebSocket lifecycle management: connect, send-frame, subscribe-topic, inspect-session, and close, with per-connection entropy delta tracking to flag divergent message schemas automatically.",
+    "gemini": "Persistent WebSocket session registry exposing atomic MCP tools for connection control and probabilistic frame classification via information-theoretic novelty scoring, replacing raw byte handling with structured agent-readable outputs."
+  },
+  "token_efficiency_ratio": 38.5,
+  "value_equivalent": "$47 por hora de trabajo manual ahorrado",
+  "invocation_examples": [
+    "Open a WebSocket connection to wss://stream.binance.com/ws/btcusdt@trade and subscribe to the trade topic, then alert me if frame entropy delta exceeds 0.4 nats",
+    "Send a typed JSON frame to my existing session ws-session-00f3a1 and inspect the next 10 responses for schema consistency",
+    "Close all WebSocket sessions whose last frame novelty score has been below 0.05 for more than 60 seconds — they are likely stale heartbeats"
+  ],
+  "pricing": {
+    "model": "variable",
+    "base_rate": 0.008,
+    "free_tier_calls": 500,
+    "yield_share_eligible": false
+  },
+  "sla": "99.9% uptime, credito automatico si falla"
+}
