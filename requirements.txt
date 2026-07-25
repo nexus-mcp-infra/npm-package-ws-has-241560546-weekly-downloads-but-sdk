@@ -1,0 +1,9 @@
+fastapi
+httpx
+mcp
+numpy
+pydantic
+scipy
+stripe
+uvicorn
+websockets
