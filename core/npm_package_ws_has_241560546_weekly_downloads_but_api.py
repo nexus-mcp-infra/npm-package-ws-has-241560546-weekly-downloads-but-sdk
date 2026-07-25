@@ -1,5 +1,6 @@
 import asyncio
 import hashlib
+import os
 import json
 import math
 import time
@@ -171,6 +172,17 @@ class WsSessionRecord:
 # In-process session registry
 # ---------------------------------------------------------------------------
 
+# --- NEXUS: PATCH ws_asset_session_limits_2026-07-25 ---
+# _nexus_meta.json documentaba "TTL eviction... hasta 256 sesiones"
+# como decision de diseno, pero no habia codigo real detras -- sin
+# auth en este asset, una sesion nunca cerrada agotaba memoria/fds sin
+# limite. Ambos valores son configurables sin redeploy via env vars
+# Railway (mismo patron que NEXUS_RATE_LIMIT_PER_MINUTE en los otros
+# 2 assets).
+MAX_CONCURRENT_SESSIONS = int(os.getenv("NEXUS_WS_MAX_SESSIONS", "256"))
+SESSION_IDLE_TTL_SECONDS = float(os.getenv("NEXUS_WS_SESSION_TTL_SECONDS", "3600"))
+
+
 class WsSessionRegistry:
     def __init__(self) -> None:
         self._sessions: dict[str, WsSessionRecord] = {}
@@ -178,6 +190,15 @@ class WsSessionRegistry:
 
     async def create(self, target_url: str) -> WsSessionRecord:
         async with self._lock:
+            await self._evict_stale_locked()
+            if len(self._sessions) >= MAX_CONCURRENT_SESSIONS:
+                raise HTTPException(
+                    status_code=503,
+                    detail=(
+                        f"Session registry at capacity ({MAX_CONCURRENT_SESSIONS} "
+                        "concurrent sessions). Close idle sessions or retry later."
+                    ),
+                )
             sid = uuid.uuid4().hex
             record = WsSessionRecord(session_id=sid, target_url=target_url)
             self._sessions[sid] = record
@@ -199,6 +220,28 @@ class WsSessionRegistry:
 
     def count(self) -> int:
         return len(self._sessions)
+
+    async def _evict_stale_locked(self) -> None:
+        """Caller must already hold self._lock. Removes CLOSED sessions
+        and any session past SESSION_IDLE_TTL_SECONDS, closing sockets
+        and cancelling listener tasks best-effort."""
+        now = time.monotonic()
+        stale_ids = [
+            sid for sid, rec in self._sessions.items()
+            if rec.state == WsConnectionState.CLOSED
+            or (now - rec.opened_at) > SESSION_IDLE_TTL_SECONDS
+        ]
+        for sid in stale_ids:
+            rec = self._sessions.pop(sid, None)
+            if rec is None:
+                continue
+            if rec.listener_task and not rec.listener_task.done():
+                rec.listener_task.cancel()
+            if rec.websocket is not None:
+                try:
+                    await rec.websocket.close(1001)
+                except Exception:
+                    pass
 
 
 # Global registry instance — singleton for the process lifetime
@@ -652,6 +695,7 @@ async def close_websocket_session(
     await SESSION_REGISTRY.remove(session_id)
     return snapshot
 
+# --- NEXUS: PATCH ws_asset_mcp_regenerated_2026-07-25 ---
 # --- NEXUS: servidor MCP real montado en el mismo proceso (inyectado por forge_agent) ---
 # Reemplaza el wrapper Node/TypeScript separado -- un solo deploy, sin
 # segundo servicio, sin salto de red interno. Ver mcp_wrapper_generator.py
@@ -722,35 +766,40 @@ async def _nexus_mcp_call_core(method: str, path: str, params: dict) -> Any:
         return resp.json()
 
 
-@_nexus_mcp.tool(name='nexus_npm_package_ws_has_241560546_weekly_down_open_websocket_session', description='Establishes a persistent WebSocket connection to a target URL and registers it in the stateful session registry. Returns a session_id for all subsequent operations. Use when an agent needs to initiate a long-lived connection before sending or receiving frames. Do NOT use to reconnect an already-open session — call close_websocket_session first, or use the session_id of an existing session.')
-async def open_websocket_session(target_url: Annotated[str, Field(..., description='Full WebSocket URL to connect to (must start with ws:// or wss://). Example: wss://stream.example.com/feed', min_length=6, max_length=2048)], headers: Annotated[list[str], Field(None, description="Optional HTTP headers to send on handshake, formatted as 'Key: Value' strings. Use for Authorization, Sec-WebSocket-Protocol, or custom headers.")], frame_schema_json: Annotated[str, Field(None, description='Optional JSON Schema (as a JSON string) describing expected frame payloads. Used to baseline entropy scoring. If omitted, entropy is computed against empirical baseline from first 10 frames.', min_length=2, max_length=8192)], connect_timeout_ms: Annotated[float, Field(5000, description='Maximum milliseconds to wait for the WebSocket handshake to complete before returning an error.', ge=500, le=30000)]) -> dict[str, Any]:
+@_nexus_mcp.tool(name='nexus_npm_package_ws_has_241560546_weekly_down_open_websocket_session', description='Establishes a persistent WebSocket connection to a target URL and registers it in the stateful session registry. Returns a session_id for all subsequent operations. Use when an agent needs to initiate a long-lived connection before sending or receiving frames. Do NOT use to reconnect an already-open session -- call close_websocket_session first, or use the session_id of an existing session.')
+async def open_websocket_session(target_url: Annotated[str, Field(..., description='Full WebSocket URL to connect to (must start with ws:// or wss://).', min_length=6)], connect_timeout_seconds: Annotated[float, Field(10.0, description='Maximum seconds to wait for the WebSocket handshake to complete.', ge=0.5, le=60.0)]) -> dict[str, Any]:
     """Open WebSocket Session"""
-    params = {"target_url": target_url, "headers": headers, "frame_schema_json": frame_schema_json, "connect_timeout_ms": connect_timeout_ms}
-    return await _nexus_mcp_call_core('POST', '/ws-sessions/open', params)
+    _nexus_path = '/ws-sessions/open'.format()
+    params = {"target_url": target_url, "connect_timeout_seconds": connect_timeout_seconds}
+    return await _nexus_mcp_call_core('POST', _nexus_path, params)
 
-@_nexus_mcp.tool(name='nexus_npm_package_ws_has_241560546_weekly_down_send_typed_ws_frame', description="Sends a single text or binary frame over an open session and returns the frame's Shannon entropy delta relative to the session baseline — confirming delivery and quantifying how novel this frame is versus the established message distribution. Use for request-response patterns or publishing commands to a WebSocket server. Do NOT use to send a sequence of frames in bulk — call this tool once per frame to preserve per-frame entropy tracking. Fails if session_id does not exist or connection is not in OPEN state.")
-async def send_typed_ws_frame(session_id: Annotated[str, Field(..., description='UUID of an open session returned by open_websocket_session.', min_length=36, max_length=36)], payload: Annotated[str, Field(..., description="Frame payload. For binary frames, encode as Base64 and set frame_type to 'binary'.", min_length=0, max_length=65536)], frame_type: Annotated[str, Field('text', description="Either 'text' or 'binary'. Determines wire encoding. Default is 'text'.", min_length=4, max_length=6)]) -> dict[str, Any]:
+@_nexus_mcp.tool(name='nexus_npm_package_ws_has_241560546_weekly_down_send_typed_ws_frame', description="Sends a single text or binary frame over an open session and returns the frame's Shannon entropy delta relative to the session baseline. Use for request-response patterns or publishing commands to a WebSocket server. Do NOT use to send a sequence of frames in bulk -- call this tool once per frame. Fails if session_id does not exist or connection is not in OPEN state.")
+async def send_typed_ws_frame(session_id: Annotated[str, Field(..., description='32-character session id (uuid4 hex, no dashes) returned by open_websocket_session.', min_length=32, max_length=32)], payload: Annotated[str, Field(..., description="Frame payload. For binary frames, encode as hex and set frame_type to 'binary'.", min_length=0, max_length=131072)], frame_type: Annotated[Literal['text', 'binary'], Field('text', description="Either 'text' or 'binary'. Determines wire encoding.")]) -> dict[str, Any]:
     """Send Typed WebSocket Frame"""
-    params = {"session_id": session_id, "payload": payload, "frame_type": frame_type}
-    return await _nexus_mcp_call_core('POST', '/ws-sessions/{session_id}/send-frame', params)
+    _nexus_path = '/ws-sessions/{session_id}/send-frame'.format(session_id=session_id)
+    params = {"payload": payload, "frame_type": frame_type}
+    return await _nexus_mcp_call_core('POST', _nexus_path, params)
 
-@_nexus_mcp.tool(name='nexus_npm_package_ws_has_241560546_weekly_down_drain_ws_frame_buffer', description='Returns up to `max_frames` buffered inbound frames received since the last drain (or session open), each annotated with its Shannon entropy delta and schema validation result. Use to poll for incoming messages without holding a blocking connection. Do NOT use as a real-time streaming mechanism — it returns only frames already buffered; for high-frequency streams increase poll cadence or reduce max_frames. Returns empty list if no frames have arrived since last call.')
-async def drain_ws_frame_buffer(session_id: Annotated[str, Field(..., description='UUID of the open session to drain frames from.', min_length=36, max_length=36)], max_frames: Annotated[float, Field(20, description='Maximum number of buffered frames to return in a single call. Frames are returned in arrival order (FIFO). Remaining frames stay in buffer.', ge=1, le=200)], entropy_anomaly_threshold: Annotated[float, Field(0, description='If set, only return frames whose absolute Shannon entropy delta exceeds this threshold (bits). Use to surface only anomalous frames. Set to 0 or omit to return all frames.', ge=0, le=16)]) -> dict[str, Any]:
+@_nexus_mcp.tool(name='nexus_npm_package_ws_has_241560546_weekly_down_drain_ws_frame_buffer', description='Returns up to max_frames buffered inbound frames received since the last drain (or session open), each annotated with its Shannon entropy delta and schema validation result. Use to poll for incoming messages without holding a blocking connection. Do NOT use as a real-time streaming mechanism -- it returns only frames already buffered.')
+async def drain_ws_frame_buffer(session_id: Annotated[str, Field(..., description='32-character session id of the open session to drain frames from.', min_length=32, max_length=32)], max_frames: Annotated[float, Field(32, description='Maximum number of buffered frames to return in a single call.', ge=1, le=256)]) -> dict[str, Any]:
     """Drain WebSocket Frame Buffer"""
-    params = {"session_id": session_id, "max_frames": max_frames, "entropy_anomaly_threshold": entropy_anomaly_threshold}
-    return await _nexus_mcp_call_core('POST', '/ws-sessions/{session_id}/drain-frames', params)
+    _nexus_path = '/ws-sessions/{session_id}/drain-frames'.format(session_id=session_id)
+    params = {"max_frames": max_frames}
+    return await _nexus_mcp_call_core('POST', _nexus_path, params)
 
-@_nexus_mcp.tool(name='nexus_npm_package_ws_has_241560546_weekly_down_inspect_ws_session_telemetry', description='Returns real-time telemetry for a session: connection state, frame counts (sent/received), cumulative and rolling Shannon entropy statistics, schema violation rate, and uptime. Use to diagnose whether a stream is diverging from its expected schema or to verify a session is still alive before sending. Do NOT use as the primary liveness check in a tight loop — it performs entropy aggregation on each call; poll at most once per second.')
-async def inspect_ws_session_telemetry(session_id: Annotated[str, Field(..., description='UUID of the session to inspect.', min_length=36, max_length=36)], entropy_window_frames: Annotated[float, Field(50, description='Number of most-recent frames to include in the rolling entropy window calculation. Larger windows give more stable estimates; smaller windows are more sensitive to recent drift.', ge=5, le=500)]) -> dict[str, Any]:
+@_nexus_mcp.tool(name='nexus_npm_package_ws_has_241560546_weekly_down_inspect_ws_session_telemetry', description='Returns real-time telemetry for a session: connection state, frame counts, cumulative and rolling Shannon entropy statistics, schema violation rate, and uptime. Use to diagnose whether a stream is diverging from its expected schema or to verify a session is still alive before sending. Do NOT use as the primary liveness check in a tight loop.')
+async def inspect_ws_session_telemetry(session_id: Annotated[str, Field(..., description='32-character session id of the session to inspect.', min_length=32, max_length=32)]) -> dict[str, Any]:
     """Inspect WebSocket Session Telemetry"""
-    params = {"session_id": session_id, "entropy_window_frames": entropy_window_frames}
-    return await _nexus_mcp_call_core('POST', '/ws-sessions/{session_id}/telemetry', params)
+    _nexus_path = '/ws-sessions/{session_id}/telemetry'.format(session_id=session_id)
+    params = {}
+    return await _nexus_mcp_call_core('POST', _nexus_path, params)
 
-@_nexus_mcp.tool(name='nexus_npm_package_ws_has_241560546_weekly_down_close_websocket_session', description='Sends a WebSocket close frame with the specified status code, waits for the server close handshake, and removes the session from the registry. Returns a final telemetry snapshot including total frames exchanged and terminal entropy statistics. Use when a session is no longer needed or before re-opening a connection to the same URL. Do NOT use to temporarily pause a session — the session_id is permanently deallocated after this call and cannot be reused.')
-async def close_websocket_session(session_id: Annotated[str, Field(..., description='UUID of the session to close.', min_length=36, max_length=36)], close_code: Annotated[float, Field(1000, description='WebSocket close status code per RFC 6455. Standard values: 1000 (normal closure), 1001 (going away), 1008 (policy violation). Defaults to 1000.', ge=1000, le=4999)], close_reason: Annotated[str, Field(None, description='Optional UTF-8 close reason string sent in the close frame. Must be 123 bytes or fewer per RFC 6455.', min_length=0, max_length=123)], drain_before_close: Annotated[bool, Field(True, description='If true, all buffered inbound frames are included in the final telemetry snapshot before the session is destroyed. If false, buffered frames are discarded immediately.')]) -> dict[str, Any]:
+@_nexus_mcp.tool(name='nexus_npm_package_ws_has_241560546_weekly_down_close_websocket_session', description='Sends a WebSocket close frame with the specified status code, waits for the server close handshake, and removes the session from the registry. Returns a final telemetry snapshot. Use when a session is no longer needed. Do NOT use to temporarily pause a session -- the session_id is permanently deallocated after this call and cannot be reused.')
+async def close_websocket_session(session_id: Annotated[str, Field(..., description='32-character session id of the session to close.', min_length=32, max_length=32)], status_code: Annotated[float, Field(1000, description='WebSocket close status code per RFC 6455 (1000-4999). Defaults to 1000.', ge=1000, le=4999)], reason: Annotated[str, Field('', description='Optional UTF-8 close reason string, max 123 bytes per RFC 6455.', max_length=123)]) -> dict[str, Any]:
     """Close WebSocket Session"""
-    params = {"session_id": session_id, "close_code": close_code, "close_reason": close_reason, "drain_before_close": drain_before_close}
-    return await _nexus_mcp_call_core('POST', '/ws-sessions/{session_id}/close', params)
+    _nexus_path = '/ws-sessions/{session_id}/close'.format(session_id=session_id)
+    params = {"status_code": status_code, "reason": reason}
+    return await _nexus_mcp_call_core('POST', _nexus_path, params)
 
 
 # Crea el sub-app ASGI de streamable HTTP -- DEBE llamarse antes de
@@ -764,14 +813,23 @@ _nexus_mcp_asgi_app = _nexus_mcp.streamable_http_app()
 
 # --- NEXUS: PATCH mcp_lifespan_composition_fix ---
 # @app.on_event() SOLO se ejecuta si Starlette uso _DefaultLifespan --
-# este archivo define su propio lifespan= (linea ~258, cleanup de
-# sesiones WebSocket al shutdown), asi que Starlette usa SOLO ese
-# callable y los handlers @app.on_event nunca corren. Sin warning, sin
-# error -- el server bootea limpio pero el primer request a /mcp
-# explota con "RuntimeError: Task group is not initialized."
-# (confirmado en logs reales de Railway, deployment 88782fc8, 2026-07-25).
-# Fix: envolver el lifespan_context que Starlette ya construyo en vez
-# de competir con el via @app.on_event.
+# eso pasa unicamente cuando el `app = FastAPI(...)` que genero el LLM
+# NO paso su propio parametro `lifespan=`. Si el LLM SI definio uno
+# (tipico en assets con estado -- ej. cleanup de conexiones WebSocket
+# al shutdown), Starlette usa ESE callable exclusivamente y los
+# handlers @app.on_event quedan sin ejecutarse -- sin warning, sin
+# error, el server bootea limpio ("Application startup complete") y
+# el primer request a /mcp explota con "RuntimeError: Task group is
+# not initialized." (confirmado contra Router.__init__ de Starlette:
+# lifespan=None -> _DefaultLifespan(self) [dispara on_event],
+# lifespan=<callable> -> se usa ESE, on_event nunca corre). Bug real
+# encontrado en produccion 2026-07-25 (asset "ws", que define su
+# propio lifespan para cerrar sesiones WebSocket abiertas).
+#
+# Fix: envolver el lifespan_context que Starlette YA construyo (sea
+# _DefaultLifespan o el custom del LLM) en vez de competir con el
+# via @app.on_event. Funciona en ambos casos sin parsear ni tocar
+# el `app = FastAPI(...)` original.
 _nexus_prev_lifespan_context = app.router.lifespan_context
 
 
@@ -786,6 +844,7 @@ app.router.lifespan_context = _nexus_combined_lifespan
 
 
 app.mount("/", _nexus_mcp_asgi_app)
+
 
 # --- NEXUS: reporte de uso real a Stripe (inyectado por forge_output_saver_v6) ---
 _NEXUS_BILLING_EXCLUDED_PATHS = {'/docs', '/favicon.ico', '/openapi.json', '/mcp', '/redoc', '/health', '/'}
