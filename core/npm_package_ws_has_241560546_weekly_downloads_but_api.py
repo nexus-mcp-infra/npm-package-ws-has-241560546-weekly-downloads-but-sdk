@@ -659,7 +659,7 @@ async def close_websocket_session(
 # session_manager que explica el patron startup/shutdown de abajo.
 
 from typing import Annotated, Any, Literal
-from contextlib import AsyncExitStack as _NexusMcpExitStack
+from contextlib import asynccontextmanager
 
 import os
 import httpx
@@ -761,17 +761,28 @@ async def close_websocket_session(session_id: Annotated[str, Field(..., descript
 # el path a "/mcp/mcp" y da 404 (bug real encontrado probando esto en
 # runtime con un cliente MCP de verdad, no algo teorico).
 _nexus_mcp_asgi_app = _nexus_mcp.streamable_http_app()
-_nexus_mcp_stack = _NexusMcpExitStack()
+
+# --- NEXUS: PATCH mcp_lifespan_composition_fix ---
+# @app.on_event() SOLO se ejecuta si Starlette uso _DefaultLifespan --
+# este archivo define su propio lifespan= (linea ~258, cleanup de
+# sesiones WebSocket al shutdown), asi que Starlette usa SOLO ese
+# callable y los handlers @app.on_event nunca corren. Sin warning, sin
+# error -- el server bootea limpio pero el primer request a /mcp
+# explota con "RuntimeError: Task group is not initialized."
+# (confirmado en logs reales de Railway, deployment 88782fc8, 2026-07-25).
+# Fix: envolver el lifespan_context que Starlette ya construyo en vez
+# de competir con el via @app.on_event.
+_nexus_prev_lifespan_context = app.router.lifespan_context
 
 
-@app.on_event("startup")
-async def _nexus_mcp_startup():
-    await _nexus_mcp_stack.enter_async_context(_nexus_mcp.session_manager.run())
+@asynccontextmanager
+async def _nexus_combined_lifespan(app):
+    async with _nexus_mcp.session_manager.run():
+        async with _nexus_prev_lifespan_context(app):
+            yield
 
 
-@app.on_event("shutdown")
-async def _nexus_mcp_shutdown():
-    await _nexus_mcp_stack.aclose()
+app.router.lifespan_context = _nexus_combined_lifespan
 
 
 app.mount("/", _nexus_mcp_asgi_app)
