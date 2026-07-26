@@ -843,11 +843,83 @@ async def _nexus_combined_lifespan(app):
 app.router.lifespan_context = _nexus_combined_lifespan
 
 
+# --- NEXUS: A2A Agent Card (spec v0.3.0/v1.0) para discovery ---
+# Ruta correcta del spec vigente -- NO /agent.json (deprecado en
+# v0.1.0), NO /v1/agent-card.json ni /v2/agent-card.json. Debe
+# registrarse ANTES del app.mount("/", ...) de mas abajo: Starlette
+# matchea rutas en el orden en que se agregan a app.routes, y un Mount
+# en "/" intercepta cualquier path si se agrega primero.
+@app.get("/.well-known/agent-card.json", include_in_schema=False)
+async def _nexus_a2a_agent_card() -> dict:
+    return {
+        "name": "WebSocket Session Manager API",
+        "description": "Stateful WebSocket session registry with per-connection Shannon entropy delta tracking for schema divergence detection in agentic workflows.",
+        "url": "https://npm-package-ws-has-241560546-w-production.up.railway.app",
+        "version": "1.0.0",
+        "documentationUrl": "https://npm-package-ws-has-241560546-w-production.up.railway.app/docs",
+        "provider": {
+            "organization": "nexus-mcp-infra",
+            "url": "https://github.com/nexus-mcp-infra/npm-package-ws-has-241560546-weekly-downloads-but-sdk",
+        },
+        "capabilities": {
+            "streaming": False,
+            "pushNotifications": False,
+            "stateTransitionHistory": False,
+        },
+        "defaultInputModes": ["application/json"],
+        "defaultOutputModes": ["application/json"],
+        "additionalInterfaces": [
+            {"url": "https://npm-package-ws-has-241560546-w-production.up.railway.app/mcp", "transport": "MCP"},
+        ],
+        "skills": [
+            {
+                "id": "nexus_npm_package_ws_has_241560546_weekly_down_open_websocket_session",
+                "name": "Open WebSocket Session",
+                "description": "Establishes a persistent WebSocket connection to a target URL and registers it in the stateful session registry. Returns a session_id for all subsequent operations. Do NOT use to reconnect an already-open session -- call close_websocket_session first.",
+                "tags": ["websocket", "session-management"],
+            },
+            {
+                "id": "nexus_npm_package_ws_has_241560546_weekly_down_send_typed_ws_frame",
+                "name": "Send Typed WebSocket Frame",
+                "description": "Sends a single text or binary frame over an open session and returns the frame's Shannon entropy delta relative to the session baseline. Do NOT use to send a sequence of frames in bulk -- call this tool once per frame.",
+                "tags": ["websocket", "entropy"],
+            },
+            {
+                "id": "nexus_npm_package_ws_has_241560546_weekly_down_drain_ws_frame_buffer",
+                "name": "Drain WebSocket Frame Buffer",
+                "description": "Returns up to max_frames buffered inbound frames received since the last drain (or session open), each annotated with its Shannon entropy delta and schema validation result. Do NOT use as a real-time streaming mechanism -- it returns only frames already buffered.",
+                "tags": ["websocket", "polling"],
+            },
+            {
+                "id": "nexus_npm_package_ws_has_241560546_weekly_down_inspect_ws_session_telemetry",
+                "name": "Inspect WebSocket Session Telemetry",
+                "description": "Returns real-time telemetry for a session: connection state, frame counts, cumulative and rolling Shannon entropy statistics, schema violation rate, and uptime. Do NOT use as the primary liveness check in a tight loop.",
+                "tags": ["websocket", "telemetry"],
+            },
+            {
+                "id": "nexus_npm_package_ws_has_241560546_weekly_down_close_websocket_session",
+                "name": "Close WebSocket Session",
+                "description": "Sends a WebSocket close frame with the specified status code, waits for the server close handshake, and removes the session from the registry. Do NOT use to temporarily pause a session -- the session_id is permanently deallocated after this call.",
+                "tags": ["websocket", "session-management"],
+            },
+        ],
+        "metadata": {
+            "protocol_note": (
+                "This service implements the Model Context Protocol (MCP) at /mcp, "
+                "not A2A's own JSONRPC/gRPC/HTTP+JSON task methods (message/send, "
+                "tasks/get, etc.). This Agent Card is provided for discovery/indexing "
+                "purposes; A2A-conformant task orchestration is not implemented. No "
+                "API key or x402 payment is required by this asset today."
+            ),
+        },
+    }
+
+
 app.mount("/", _nexus_mcp_asgi_app)
 
 
 # --- NEXUS: reporte de uso real a Stripe (inyectado por forge_output_saver_v6) ---
-_NEXUS_BILLING_EXCLUDED_PATHS = {'/docs', '/favicon.ico', '/openapi.json', '/mcp', '/redoc', '/health', '/'}
+_NEXUS_BILLING_EXCLUDED_PATHS = {'/docs', '/favicon.ico', '/openapi.json', '/mcp', '/redoc', '/health', '/', '/.well-known/agent-card.json'}
 @app.middleware("http")
 async def _nexus_usage_middleware(request, call_next):
     response = await call_next(request)
