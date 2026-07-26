@@ -294,6 +294,7 @@ async def lifespan(app: FastAPI):
 app = FastAPI(
     title="WebSocket Session Manager API",
     version="1.0.0",
+    contact={"email": "dasaanrod@gmail.com"},
     description=(
         "Stateful WebSocket session registry with per-connection Shannon entropy "
         "delta tracking for schema divergence detection in agentic workflows."
@@ -913,6 +914,27 @@ async def _nexus_a2a_agent_card() -> dict:
             ),
         },
     }
+
+
+# --- NEXUS: favicon.ico real para checklist de x402scan ---
+# x402scan.com/resources/register senala /favicon.ico ausente al leer
+# el listado de otro asset (2026-07-26); aplicado aca tambien para
+# consistencia entre los 3. Icono generico solido, sin decision de
+# branding -- generado con stdlib puro (struct+zlib), sin Pillow. Debe
+# registrarse ANTES del app.mount("/", ...) de mas abajo, mismo motivo
+# que el Agent Card: Starlette matchea rutas en el orden en que se
+# agregan a app.routes.
+import base64 as _nexus_favicon_base64
+
+_NEXUS_FAVICON_ICO = _nexus_favicon_base64.b64decode(
+    "AAABAAEAICAAAAEAIABpAAAAFgAAAIlQTkcNChoKAAAADUlIRFIAAAAgAAAAIAgGAAAAc3p69AAAADBJREFUeNrtziEBAAAIAzCS4MlA/1wQ42ZiftWzl1QCAgICAgICAgICAgICAgLpwAO9cwRbSHXMRQAAAABJRU5ErkJggg=="
+)
+
+
+@app.get("/favicon.ico", include_in_schema=False)
+async def _nexus_favicon():
+    from fastapi import Response
+    return Response(content=_NEXUS_FAVICON_ICO, media_type="image/x-icon")
 
 
 app.mount("/", _nexus_mcp_asgi_app)
