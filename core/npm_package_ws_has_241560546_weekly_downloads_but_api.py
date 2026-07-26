@@ -302,6 +302,34 @@ app = FastAPI(
     lifespan=lifespan,
 )
 
+# --- NEXUS: x402 (pago por llamada en USDC, Base Sepolia testnet) ---
+from x402.http import FacilitatorConfig, HTTPFacilitatorClient, PaymentOption
+from x402.http.middleware.fastapi import PaymentMiddlewareASGI
+from x402.http.types import RouteConfig
+from x402.mechanisms.evm.exact import ExactEvmServerScheme
+from x402.schemas import Network
+from x402.server import x402ResourceServer
+
+_NEXUS_X402_EVM_ADDRESS = "0x70e9f8057bb50e31b6ee06958bcbbe7de9daa98f"
+_NEXUS_X402_NETWORK: Network = "eip155:84532"  # Base Sepolia (testnet) -- cambiar a eip155:8453 + facilitator mainnet para produccion
+_NEXUS_X402_PRICE = "$0.01"
+
+_nexus_x402_facilitator = HTTPFacilitatorClient(
+    FacilitatorConfig(url="https://x402.org/facilitator")
+)
+_nexus_x402_server = x402ResourceServer(_nexus_x402_facilitator)
+_nexus_x402_server.register(_NEXUS_X402_NETWORK, ExactEvmServerScheme())
+
+_NEXUS_X402_ROUTES: dict[str, RouteConfig] = {
+    "POST /ws-sessions/open": RouteConfig(
+        accepts=[PaymentOption(scheme="exact", pay_to=_NEXUS_X402_EVM_ADDRESS, price=_NEXUS_X402_PRICE, network=_NEXUS_X402_NETWORK)],
+        mime_type="application/json",
+        description="Abre una sesion WebSocket administrada con tracking de entropia por frame",
+    ),
+}
+
+app.add_middleware(PaymentMiddlewareASGI, routes=_NEXUS_X402_ROUTES, server=_nexus_x402_server)
+
 
 # ---------------------------------------------------------------------------
 # Request / Response schemas
@@ -941,7 +969,7 @@ app.mount("/", _nexus_mcp_asgi_app)
 
 
 # --- NEXUS: reporte de uso real a Stripe (inyectado por forge_output_saver_v6) ---
-_NEXUS_BILLING_EXCLUDED_PATHS = {'/docs', '/favicon.ico', '/openapi.json', '/mcp', '/redoc', '/health', '/', '/.well-known/agent-card.json'}
+_NEXUS_BILLING_EXCLUDED_PATHS = {'/docs', '/favicon.ico', '/openapi.json', '/mcp', '/redoc', '/health', '/', '/.well-known/agent-card.json', '/ws-sessions/open'}  # x402 cubre /ws-sessions/open -- Stripe no debe cobrarla de nuevo
 @app.middleware("http")
 async def _nexus_usage_middleware(request, call_next):
     response = await call_next(request)
