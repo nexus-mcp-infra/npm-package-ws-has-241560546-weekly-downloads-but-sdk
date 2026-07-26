@@ -965,11 +965,27 @@ async def _nexus_favicon():
     return Response(content=_NEXUS_FAVICON_ICO, media_type="image/x-icon")
 
 
+# --- NEXUS: 402index.io domain claim verification file ---
+# POST /api/v1/claim (domain=npm-package-ws-has-241560546-w-production.up.railway.app,
+# 2026-07-26) pide este archivo estatico con el hash exacto, sin espacios
+# ni saltos de linea extra. No es DNS TXT -- es un archivo servido por la
+# propia app. Debe registrarse ANTES del app.mount("/", ...) de mas abajo,
+# mismo motivo que favicon.ico/agent-card.json: Starlette matchea rutas en
+# el orden en que se agregan a app.routes.
+_NEXUS_402INDEX_VERIFY_HASH = "904ccf92916ad0d0a4f739059885c80250a1c1c9d51b009695ea83f704c66d3b"
+
+
+@app.get("/.well-known/402index-verify.txt", include_in_schema=False)
+async def _nexus_402index_verify():
+    from fastapi.responses import PlainTextResponse
+    return PlainTextResponse(content=_NEXUS_402INDEX_VERIFY_HASH)
+
+
 app.mount("/", _nexus_mcp_asgi_app)
 
 
 # --- NEXUS: reporte de uso real a Stripe (inyectado por forge_output_saver_v6) ---
-_NEXUS_BILLING_EXCLUDED_PATHS = {'/docs', '/favicon.ico', '/openapi.json', '/mcp', '/redoc', '/health', '/', '/.well-known/agent-card.json', '/ws-sessions/open'}  # x402 cubre /ws-sessions/open -- Stripe no debe cobrarla de nuevo
+_NEXUS_BILLING_EXCLUDED_PATHS = {'/docs', '/favicon.ico', '/openapi.json', '/mcp', '/redoc', '/health', '/', '/.well-known/agent-card.json', '/ws-sessions/open', '/.well-known/402index-verify.txt'}  # x402 cubre /ws-sessions/open -- Stripe no debe cobrarla de nuevo; 402index-verify.txt es discovery/verificacion, no negocio
 @app.middleware("http")
 async def _nexus_usage_middleware(request, call_next):
     response = await call_next(request)
