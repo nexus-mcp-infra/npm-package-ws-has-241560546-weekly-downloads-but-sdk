@@ -7,3 +7,4 @@ scipy
 stripe
 uvicorn
 websockets
+x402[fastapi,evm]
