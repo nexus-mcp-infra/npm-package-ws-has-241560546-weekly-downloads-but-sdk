@@ -7,4 +7,5 @@ scipy
 stripe
 uvicorn
 websockets
-x402[fastapi,evm]
+x402[fastapi,evm,extensions]
+cdp-sdk
