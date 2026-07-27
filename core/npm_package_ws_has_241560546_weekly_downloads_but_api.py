@@ -309,22 +309,57 @@ from x402.http.types import RouteConfig
 from x402.mechanisms.evm.exact import ExactEvmServerScheme
 from x402.schemas import Network
 from x402.server import x402ResourceServer
+# --- NEXUS PATCH cdp_facilitator_bazaar_ws ---
+from cdp.x402 import create_facilitator_config as _nexus_cdp_create_facilitator_config
+from x402.extensions.bazaar import (
+    OutputConfig as _NexusBazaarOutputConfig,
+    declare_discovery_extension as _nexus_declare_discovery_extension,
+)
 
 _NEXUS_X402_EVM_ADDRESS = "0x70e9f8057bb50e31b6ee06958bcbbe7de9daa98f"
 _NEXUS_X402_NETWORK: Network = "eip155:84532"  # Base Sepolia (testnet) -- cambiar a eip155:8453 + facilitator mainnet para produccion
 _NEXUS_X402_PRICE = "$0.01"
 
+# x402.org/facilitator nunca cataloga nada en el Bazaar de Coinbase -- el CDP
+# Facilitator si lo hace (indexa en el primer verify/settle real que pasa por
+# el, Base Sepolia incluido). create_facilitator_config() sin argumentos lee
+# CDP_API_KEY_ID/CDP_API_KEY_SECRET del entorno (Railway) -- deben estar
+# seteadas antes de este deploy. A diferencia de BuyWhere, "ws" no llama
+# initialize()/get_supported() a nivel de modulo, asi que sin credenciales el
+# proceso igual bootea -- solo el primer verify/settle real contra
+# POST /ws-sessions/open fallaria con 401 de CDP.
 _nexus_x402_facilitator = HTTPFacilitatorClient(
-    FacilitatorConfig(url="https://x402.org/facilitator")
+    _nexus_cdp_create_facilitator_config()
 )
 _nexus_x402_server = x402ResourceServer(_nexus_x402_facilitator)
 _nexus_x402_server.register(_NEXUS_X402_NETWORK, ExactEvmServerScheme())
+
+_NEXUS_BAZAAR_WS_OPEN_EXTENSION = _nexus_declare_discovery_extension(
+    input={
+        "target_url": "wss://echo.websocket.org",
+        "connect_timeout_seconds": 10.0,
+    },
+    input_schema={
+        "properties": {
+            "target_url": {"type": "string", "description": "WebSocket URL to connect to (ws:// or wss://)"},
+            "connect_timeout_seconds": {"type": "number", "minimum": 0.5, "maximum": 60.0},
+            "extra_headers": {"type": "object", "description": "Optional HTTP headers for the upgrade request"},
+        },
+        "required": ["target_url"],
+    },
+    output=_NexusBazaarOutputConfig(
+        example={"session_id": "sess_abc123", "target_url": "wss://echo.websocket.org", "state": "open", "opened_at_unix": 1785168800.0, "message": "connected"},
+    ),
+)
 
 _NEXUS_X402_ROUTES: dict[str, RouteConfig] = {
     "POST /ws-sessions/open": RouteConfig(
         accepts=[PaymentOption(scheme="exact", pay_to=_NEXUS_X402_EVM_ADDRESS, price=_NEXUS_X402_PRICE, network=_NEXUS_X402_NETWORK)],
         mime_type="application/json",
         description="Abre una sesion WebSocket administrada con tracking de entropia por frame",
+        service_name="WS-Session-Registry",
+        tags=["websocket", "session", "entropy", "agentic"],
+        extensions=_NEXUS_BAZAAR_WS_OPEN_EXTENSION,
     ),
 }
 
