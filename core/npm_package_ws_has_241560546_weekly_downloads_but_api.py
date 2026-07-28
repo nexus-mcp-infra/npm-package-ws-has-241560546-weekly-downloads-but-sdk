@@ -973,8 +973,30 @@ async def _nexus_a2a_agent_card() -> dict:
                 "not A2A's own JSONRPC/gRPC/HTTP+JSON task methods (message/send, "
                 "tasks/get, etc.). This Agent Card is provided for discovery/indexing "
                 "purposes; A2A-conformant task orchestration is not implemented. No "
-                "API key or x402 payment is required by this asset today."
+                "API key is required by this asset. See payment_info below for the "
+                "per-route x402 payment status."
             ),
+            # --- NEXUS PATCH agent_card_payment_status_ws ---
+            # Grounded 1:1 contra _NEXUS_X402_ROUTES / _NEXUS_X402_PRICE (mas arriba
+            # en este mismo archivo) -- no se inventa ningun precio/ruta nuevo aca.
+            # Corrige el hallazgo de la auditoria Fase 0 (docs/fase0_auditoria_
+            # 2026-07-28.md SS3): protocol_note afirmaba "no payment required" pese a
+            # que POST /ws-sessions/open ya devolvia 402 real en produccion.
+            "_NEXUS_AGENT_CARD_PAYMENT_INFO": True,
+            "payment_info": {
+                "POST /ws-sessions/open": {
+                    "payment_required": True,
+                    "scheme": "x402",
+                    "amount": _NEXUS_X402_PRICE,
+                    "asset": "USDC",
+                    "network": _NEXUS_X402_NETWORK,
+                    "note": "Opens a new managed WebSocket session; the 4 operations below act on an already-open session and are not separately charged.",
+                },
+                "POST /ws-sessions/{session_id}/send-frame": {"payment_required": False},
+                "POST /ws-sessions/{session_id}/drain-frames": {"payment_required": False},
+                "POST /ws-sessions/{session_id}/telemetry": {"payment_required": False},
+                "POST /ws-sessions/{session_id}/close": {"payment_required": False},
+            },
         },
     }
 
