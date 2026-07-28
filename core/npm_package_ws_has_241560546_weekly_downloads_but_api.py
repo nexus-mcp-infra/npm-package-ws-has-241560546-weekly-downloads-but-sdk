@@ -1038,6 +1038,37 @@ async def _nexus_402index_verify():
     return PlainTextResponse(content=_NEXUS_402INDEX_VERIFY_HASH)
 
 
+# --- NEXUS PATCH ws_health_endpoint_2026_07_28 ---
+# GET /health no existia (404 real, ver CLAUDE.md SS9.8/9.12) -- "ws" no
+# depende de ningun upstream fijo (target_url lo define el caller en cada
+# request, ver OpenSessionRequest mas arriba), asi que el unico chequeo
+# real disponible es liveness del proceso + saturacion del registro de
+# sesiones concurrentes ya existente (SESSION_REGISTRY.count() /
+# MAX_CONCURRENT_SESSIONS, ver PATCH ws_asset_session_limits_2026-07-25
+# mas arriba). "degraded" al 90% de MAX_CONCURRENT_SESSIONS -- mismo
+# umbral de alerta temprana antes del 503 real que ya dispara
+# WsSessionRegistry.create() al 100% de capacidad. status NO esta
+# hardcodeado (bug ya documentado en similarity-search-api y en el
+# /health original de BuyWhere, ver CLAUDE.md SS9.8) -- es funcion real
+# de active_sessions vs. capacity. Debe registrarse ANTES de
+# app.mount("/", ...) de mas abajo, mismo motivo que
+# agent-card.json/favicon.ico/402index-verify.txt.
+@app.get(
+    "/health",
+    summary="Liveness probe - no auth required",
+    openapi_extra={"security": []},
+)
+async def _nexus_health_check() -> dict:
+    active = SESSION_REGISTRY.count()
+    capacity = MAX_CONCURRENT_SESSIONS
+    near_capacity = active >= int(capacity * 0.9)
+    return {
+        "status": "degraded" if near_capacity else "ok",
+        "active_sessions": active,
+        "max_concurrent_sessions": capacity,
+    }
+
+
 app.mount("/", _nexus_mcp_asgi_app)
 
 
