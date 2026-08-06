@@ -841,7 +841,40 @@ async def _nexus_mcp_call_core(method: str, path: str, params: dict, headers: di
         return resp.json()
 
 
+# --- PATCH ws_mcp_x402_auth_gate ---
+# create_payment_wrapper() con las MISMAS PaymentOption/price/network/pay_to
+# que ya usa la ruta REST (_NEXUS_X402_ROUTES / _nexus_x402_server, ambos
+# definidos mas arriba) -- mismo patron ya probado en produccion en
+# similarity-search-api (archive/patches/patch_mcp_x402_auth_gate_similarity_search.py),
+# con una guarda adicional: si initialize()/build_payment_requirements()
+# fallan (ej. credenciales CDP invalidas), el wrapper cae a identity en vez
+# de crashear el boot completo -- ver docstring de patch_ws_mcp_x402_auth_gate.py
+# para el razonamiento (CDP, a diferencia de x402.org, exige JWT real).
+from x402.mcp import create_payment_wrapper as _nexus_mcp_x402_wrapper_factory
+from x402.schemas.config import ResourceConfig as _NexusX402ResourceConfig
+
+try:
+    if not getattr(_nexus_x402_server, "_initialized", False):
+        _nexus_x402_server.initialize()
+    _NEXUS_MCP_X402_RESOURCE_CONFIG = _NexusX402ResourceConfig(
+        scheme="exact",
+        pay_to=_NEXUS_X402_EVM_ADDRESS,
+        price=_NEXUS_X402_PRICE,
+        network=_NEXUS_X402_NETWORK,
+    )
+    _NEXUS_MCP_X402_ACCEPTS = _nexus_x402_server.build_payment_requirements(_NEXUS_MCP_X402_RESOURCE_CONFIG)
+    _nexus_mcp_x402_wrapper = _nexus_mcp_x402_wrapper_factory(_nexus_x402_server, accepts=_NEXUS_MCP_X402_ACCEPTS)
+except Exception as _nexus_x402_mcp_init_error:
+    print(
+        f"[NEXUS x402-mcp] init failed, open_websocket_session MCP tool falls back to "
+        f"UNGATED (REST via PaymentMiddlewareASGI stays gated normally): {_nexus_x402_mcp_init_error}",
+        flush=True,
+    )
+    _nexus_mcp_x402_wrapper = lambda fn: fn
+
+
 @_nexus_mcp.tool(name='nexus_npm_package_ws_has_241560546_weekly_down_open_websocket_session', description='Establishes a persistent WebSocket connection to a target URL and registers it in the stateful session registry. Returns a session_id for all subsequent operations. Use when an agent needs to initiate a long-lived connection before sending or receiving frames. Do NOT use to reconnect an already-open session -- call close_websocket_session first, or use the session_id of an existing session.')
+@_nexus_mcp_x402_wrapper
 async def open_websocket_session(target_url: Annotated[str, Field(..., description='Full WebSocket URL to connect to (must start with ws:// or wss://).', min_length=6)], connect_timeout_seconds: Annotated[float, Field(10.0, description='Maximum seconds to wait for the WebSocket handshake to complete.', ge=0.5, le=60.0)]) -> dict[str, Any]:
     """Open WebSocket Session"""
     _nexus_path = '/ws-sessions/open'.format()
