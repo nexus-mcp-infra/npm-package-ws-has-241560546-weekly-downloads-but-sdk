@@ -334,6 +334,74 @@ _nexus_x402_facilitator = HTTPFacilitatorClient(
 _nexus_x402_server = x402ResourceServer(_nexus_x402_facilitator)
 _nexus_x402_server.register(_NEXUS_X402_NETWORK, ExactEvmServerScheme())
 
+# --- PATCH x402_revenue_events_hook ---
+# Cierra CLAUDE.md SS9.57 pendiente #1 / SS9.58: settle_payment() real
+# (REST o MCP, ambos llaman sobre esta MISMA instancia de
+# x402ResourceServer) no dejaba ninguna fila en revenue_events. Portado
+# a mano del mismo fix ya aplicado a mcp_wrapper_generator.py -- ver
+# patch_x402_revenue_events_hook.py y CLAUDE.md SS9.58 para el diseno
+# completo (por que on_after_settle() y no un punto proxy pre-settlement).
+_NEXUS_SUPABASE_URL = os.getenv("SUPABASE_URL")
+_NEXUS_SUPABASE_ANON_KEY = os.getenv("SUPABASE_ANON_KEY")
+_NEXUS_ASSET_NAME = os.getenv("NEXUS_ASSET")
+
+
+async def _nexus_supabase_insert(table, payload):
+    if not _NEXUS_SUPABASE_URL or not _NEXUS_SUPABASE_ANON_KEY:
+        return
+    try:
+        async with httpx.AsyncClient(timeout=3.0) as client:
+            await client.post(
+                f"{_NEXUS_SUPABASE_URL}/rest/v1/{table}",
+                json=payload,
+                headers={
+                    "apikey": _NEXUS_SUPABASE_ANON_KEY,
+                    "Authorization": f"Bearer {_NEXUS_SUPABASE_ANON_KEY}",
+                    "Content-Type": "application/json",
+                    "Prefer": "return=minimal",
+                },
+            )
+    except Exception:
+        pass  # nunca romper el flujo real por un fallo de telemetria
+
+
+async def _nexus_log_x402_revenue_event(ctx) -> None:
+    """
+    AfterSettleHook real -- dispara SOLO cuando x402ResourceServer
+    confirma settle_result.success=True (ver _settle_payment_core en
+    x402/server_base.py). Duck-typed, nunca levanta: un bug aca no debe
+    poder romper la respuesta de pago real que el caller ya esta por
+    recibir.
+    """
+    try:
+        result = getattr(ctx, "result", None)
+        requirements = getattr(ctx, "requirements", None)
+        if result is None or requirements is None or not getattr(result, "success", False):
+            return
+        # amount en unidades atomicas de USDC (6 decimales) -- amount_eur
+        # no es EUR, es el valor numerico crudo, sin conversion FX (mismo
+        # mismatch de schema ya documentado en el generador).
+        raw_amount = getattr(requirements, "amount", None)
+        amount_eur = int(raw_amount) / 1_000_000 if raw_amount is not None else None
+        await _nexus_supabase_insert("revenue_events", {
+            "asset_name": _NEXUS_ASSET_NAME,
+            "amount_eur": amount_eur,
+            "pricing_model": "x402",
+            "stripe_event_id": None,
+            "customer_id": getattr(result, "payer", None),
+        })
+    except Exception:
+        pass
+
+
+def _nexus_register_x402_revenue_logging(x402_server) -> None:
+    """Registrado UNA vez, cubre settle_payment() real de REST y MCP
+    por igual -- ambos llaman sobre la misma instancia compartida."""
+    x402_server.on_after_settle(_nexus_log_x402_revenue_event)
+
+
+_nexus_register_x402_revenue_logging(_nexus_x402_server)
+
 _NEXUS_BAZAAR_WS_OPEN_EXTENSION = _nexus_declare_discovery_extension(
     input={
         "target_url": "wss://echo.websocket.org",
