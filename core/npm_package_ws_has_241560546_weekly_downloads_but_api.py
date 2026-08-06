@@ -814,18 +814,29 @@ _nexus_mcp = _NexusFastMCP(
 )
 
 
-async def _nexus_mcp_call_core(method: str, path: str, params: dict) -> Any:
+# --- PATCH ws_mcp_internal_call_isolation ---
+# Ver patch_mcp_internal_call_isolation.py (mcp_wrapper_generator.py) y
+# CLAUDE.md SS9.51/SS9.5x para el razonamiento completo. `_nexus_internal_app`
+# comparte las mismas rutas/dependencias que `app` (misma resolucion real
+# de FastAPI DI) pero SIN el x402 PaymentMiddlewareASGI (registrado solo en
+# `app`, filtrado por metodo+ruta REST -- gateaba esta misma llamada interna
+# a POST /ws-sessions/open con un 402 espurio incondicional, sin importar si
+# el caller MCP ya habia pagado la request real a /mcp).
+_nexus_internal_app = FastAPI(routes=list(app.routes))
+
+
+async def _nexus_mcp_call_core(method: str, path: str, params: dict, headers: dict | None = None) -> Any:
     """
     Llama al endpoint real del core -- via ASGI in-process (sin red
-    real, sin segundo proceso), no un HTTP call externo. `app` ya
-    existe en este mismo modulo (es el FastAPI que FORGE genero).
+    real, sin segundo proceso) contra _nexus_internal_app (ver arriba),
+    NO contra `app` directamente.
     """
-    transport = httpx.ASGITransport(app=app)
+    transport = httpx.ASGITransport(app=_nexus_internal_app)
     async with httpx.AsyncClient(transport=transport, base_url="http://nexus-internal") as client:
         if method == "GET":
-            resp = await client.get(path, params=params)
+            resp = await client.get(path, params=params, headers=headers)
         else:
-            resp = await client.post(path, json=params)
+            resp = await client.post(path, json=params, headers=headers)
         resp.raise_for_status()
         return resp.json()
 
