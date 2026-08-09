@@ -1181,11 +1181,23 @@ async def _nexus_health_check() -> dict:
     }
 
 
+# --- PATCH llms_txt_ws ---
+# Sirve llms_txt/ws.llms.txt real (CLAUDE.md SS9.71) -- grounded contra
+# el openapi.json/README reales del deploy, no generado en runtime.
+_NEXUS_LLMS_TXT_CONTENT = "# WebSocket Session Manager API\n\n> Stateful WebSocket session registry that proxies a connection to a target WebSocket URL on the caller's behalf, exposing open/send/drain/telemetry/close as plain HTTP (and MCP) operations. Each inbound frame is scored with a Shannon entropy delta to flag schema divergence, without needing an external monitoring pipeline.\n\nBase URL: https://npm-package-ws-has-241560546-w-production.up.railway.app\n\nPricing: pay-per-call via the x402 protocol (USDC on Base Sepolia, $0.01 per call), charged only on `POST /ws-sessions/open`. Every other operation on an already-open session (`send-frame`, `drain-frames`, `telemetry`, `close`) is free once the session exists.\n\n## Endpoints\n\n- [POST /ws-sessions/open](https://npm-package-ws-has-241560546-w-production.up.railway.app/ws-sessions/open): Opens a new proxied WebSocket connection to a target URL. The only paid operation.\n- [POST /ws-sessions/{session_id}/send-frame](https://npm-package-ws-has-241560546-w-production.up.railway.app/ws-sessions/{session_id}/send-frame): Sends a typed frame over an already-open session.\n- [POST /ws-sessions/{session_id}/drain-frames](https://npm-package-ws-has-241560546-w-production.up.railway.app/ws-sessions/{session_id}/drain-frames): Retrieves buffered inbound frames from a session.\n- [POST /ws-sessions/{session_id}/telemetry](https://npm-package-ws-has-241560546-w-production.up.railway.app/ws-sessions/{session_id}/telemetry): Returns entropy/delta metrics and stats for a session.\n- [POST /ws-sessions/{session_id}/close](https://npm-package-ws-has-241560546-w-production.up.railway.app/ws-sessions/{session_id}/close): Terminates a session, with an optional status code.\n- [GET /health](https://npm-package-ws-has-241560546-w-production.up.railway.app/health): Liveness probe, no authentication required.\n\n## MCP\n\n- [MCP endpoint](https://npm-package-ws-has-241560546-w-production.up.railway.app/mcp): The five operations above exposed as MCP tools over streamable HTTP, for agent clients that speak MCP instead of raw REST. `open_websocket_session` is the paid tool; the x402 challenge/payment happens at this layer too, not only over REST.\n- [Agent Card](https://npm-package-ws-has-241560546-w-production.up.railway.app/.well-known/agent-card.json): A2A-style agent card describing the exposed skills and payment status.\n\n## Optional\n\n- [OpenAPI spec](https://npm-package-ws-has-241560546-w-production.up.railway.app/openapi.json): Full machine-readable schema for the REST surface.\n- [Source (SDK repo)](https://github.com/nexus-mcp-infra/npm-package-ws-has-241560546-weekly-downloads-but-sdk): README with request/response examples and HTTP/MCP usage.\n"
+
+
+@app.get("/llms.txt", include_in_schema=False)
+async def _nexus_llms_txt():
+    from fastapi.responses import PlainTextResponse
+    return PlainTextResponse(content=_NEXUS_LLMS_TXT_CONTENT, media_type="text/plain; charset=utf-8")
+
+
 app.mount("/", _nexus_mcp_asgi_app)
 
 
 # --- NEXUS: reporte de uso real a Stripe (inyectado por forge_output_saver_v6) ---
-_NEXUS_BILLING_EXCLUDED_PATHS = {'/docs', '/favicon.ico', '/openapi.json', '/mcp', '/redoc', '/health', '/', '/.well-known/agent-card.json', '/ws-sessions/open', '/.well-known/402index-verify.txt'}  # x402 cubre /ws-sessions/open -- Stripe no debe cobrarla de nuevo; 402index-verify.txt es discovery/verificacion, no negocio
+_NEXUS_BILLING_EXCLUDED_PATHS = {'/docs', '/favicon.ico', '/openapi.json', '/mcp', '/redoc', '/health', '/', '/llms.txt', '/.well-known/agent-card.json', '/ws-sessions/open', '/.well-known/402index-verify.txt'}  # x402 cubre /ws-sessions/open -- Stripe no debe cobrarla de nuevo; 402index-verify.txt es discovery/verificacion, no negocio
 @app.middleware("http")
 async def _nexus_usage_middleware(request, call_next):
     response = await call_next(request)
