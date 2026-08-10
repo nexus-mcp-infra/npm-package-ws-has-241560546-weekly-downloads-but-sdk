@@ -433,6 +433,50 @@ _NEXUS_X402_ROUTES: dict[str, RouteConfig] = {
 
 app.add_middleware(PaymentMiddlewareASGI, routes=_NEXUS_X402_ROUTES, server=_nexus_x402_server)
 
+# --- NEXUS: x402scan discovery -- x-payment-info en openapi.json ---
+# x402scan (Merit-Systems) no tiene un .well-known/x402 ratificado --
+# mismo hallazgo de CLAUDE.md SS9.2 (aplicado en su momento a
+# similarity-search-api / useful-data-source-for-agents, nunca portado
+# a este asset -- ver SS9.74): el mecanismo real es leer /openapi.json
+# buscando la extension "x-payment-info" por operacion. Sin esto,
+# x402scan reporta "no discovery document found" pese a que
+# /openapi.json ya se sirve y el middleware real ya cobra la ruta.
+# La ruta y el precio salen de _NEXUS_X402_ROUTES / _NEXUS_X402_PRICE
+# ya definidos arriba -- nada nuevo se inventa aca.
+_NEXUS_X402_OPENAPI_OPERATIONS = [
+    ("post", "/ws-sessions/open"),
+]
+
+
+def _nexus_x402_openapi_with_payment_info():
+    if app.openapi_schema:
+        return app.openapi_schema
+    from fastapi.openapi.utils import get_openapi as _nexus_get_openapi
+    schema = _nexus_get_openapi(
+        title=app.title,
+        version=app.version,
+        description=app.description,
+        routes=app.routes,
+    )
+    for _nexus_method, _nexus_path in _NEXUS_X402_OPENAPI_OPERATIONS:
+        _nexus_operation = schema.get("paths", {}).get(_nexus_path, {}).get(_nexus_method)
+        if _nexus_operation is None:
+            continue
+        _nexus_operation["x-payment-info"] = {
+            "price": {
+                "mode": "fixed",
+                "currency": "USD",
+                "amount": _NEXUS_X402_PRICE.lstrip("$"),
+            },
+            "protocols": [{"x402": {}}],
+        }
+        _nexus_operation.setdefault("responses", {})["402"] = {"description": "Payment Required"}
+    app.openapi_schema = schema
+    return app.openapi_schema
+
+
+app.openapi = _nexus_x402_openapi_with_payment_info
+
 
 # ---------------------------------------------------------------------------
 # Request / Response schemas
