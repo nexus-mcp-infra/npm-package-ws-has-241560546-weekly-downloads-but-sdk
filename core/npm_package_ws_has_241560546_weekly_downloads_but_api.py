@@ -365,6 +365,81 @@ async def _nexus_supabase_insert(table, payload):
         pass  # nunca romper el flujo real por un fallo de telemetria
 
 
+# --- PATCH mcp_call_events_retrofit ---
+# Retrofit de mcp_call_events (proxy de uso/latencia) -- portado del
+# template real del generador (mcp_wrapper_generator.py). Divergencia
+# deliberada: no porta extraccion de wallet pagadora (no la usa este
+# insert). Ver patch_mcp_call_events_retrofit_ws.py.
+_NEXUS_SECTOR = "uncategorized"
+
+
+def _nexus_truncate_ip(raw_ip):
+    """Trunca a /24 (IPv4) o /64 (IPv6); nunca devuelve la IP completa."""
+    if not raw_ip:
+        return None
+    if ":" in raw_ip and "." not in raw_ip:
+        segments = [s for s in raw_ip.split(":") if s]
+        head = segments[:4] if len(segments) >= 4 else segments
+        return (":".join(head) + "::/64") if head else None
+    octets = raw_ip.split(".")
+    if len(octets) == 4 and all(o.isdigit() for o in octets):
+        return f"{octets[0]}.{octets[1]}.{octets[2]}.0/24"
+    return None
+
+
+def _nexus_call_context(ctx):
+    """Best-effort: ctx.request_context.request es un starlette.Request
+    real incluso con stateless_http=True (poblado por request HTTP
+    individual, ver mcp/server/streamable_http.py en mcp==1.28.1)."""
+    ip_range = None
+    agent_framework = None
+    try:
+        request = ctx.request_context.request if ctx is not None else None
+        if request is not None:
+            forwarded = request.headers.get("x-forwarded-for")
+            raw_ip = forwarded.split(",")[0].strip() if forwarded else (
+                request.client.host if request.client else None
+            )
+            ip_range = _nexus_truncate_ip(raw_ip)
+            ua = request.headers.get("user-agent")
+            agent_framework = ua[:255] if ua else None
+    except Exception:
+        pass
+    return ip_range, agent_framework
+
+
+async def _nexus_log_mcp_call_event(tool_id, success, latency_ms, ctx, route_key=None):
+    """Escribe mcp_call_events (proxy de uso/latencia) siempre que haya
+    credenciales -- dispara en el finally de cada tool MCP, antes de
+    cualquier intento de settlement x402 real para esa llamada.
+    price_charged: "cuanto hubiera cobrado esta llamada si el pago
+    hubiera settleado", no una afirmacion de que settleo -- mismo
+    criterio del generador."""
+    ip_range, agent_framework = _nexus_call_context(ctx)
+    price_charged = None
+    x402_routes = globals().get("_NEXUS_X402_ROUTES") or {}
+    is_paid_route = route_key is not None and route_key in x402_routes
+    if is_paid_route:
+        raw_price = globals().get("_NEXUS_X402_PRICE")
+        if raw_price:
+            try:
+                price_charged = float(str(raw_price).lstrip("$"))
+            except Exception:
+                price_charged = None
+    await _nexus_supabase_insert("mcp_call_events", {
+        "agent_framework": agent_framework,
+        "tool_id": tool_id,
+        "sector": _NEXUS_SECTOR,
+        "asset_name": _NEXUS_ASSET_NAME,
+        "token_input": None,
+        "token_output": None,
+        "success": success,
+        "latency_ms": latency_ms,
+        "client_ip_range": ip_range,
+        "price_charged": price_charged,
+    })
+
+
 async def _nexus_log_x402_revenue_event(ctx) -> None:
     """
     AfterSettleHook real -- dispara SOLO cuando x402ResourceServer
@@ -989,37 +1064,107 @@ except Exception as _nexus_x402_mcp_init_error:
 @_nexus_mcp_x402_wrapper
 async def open_websocket_session(target_url: Annotated[str, Field(..., description='Full WebSocket URL to connect to (must start with ws:// or wss://).', min_length=6)], connect_timeout_seconds: Annotated[float, Field(10.0, description='Maximum seconds to wait for the WebSocket handshake to complete.', ge=0.5, le=60.0)]) -> dict[str, Any]:
     """Open WebSocket Session"""
+    # --- PATCH mcp_call_events_retrofit ---
     _nexus_path = '/ws-sessions/open'.format()
     params = {"target_url": target_url, "connect_timeout_seconds": connect_timeout_seconds}
-    return await _nexus_mcp_call_core('POST', _nexus_path, params)
+    _nexus_call_t0 = time.monotonic()
+    _nexus_call_success = True
+    try:
+        return await _nexus_mcp_call_core('POST', _nexus_path, params)
+    except Exception:
+        _nexus_call_success = False
+        raise
+    finally:
+        _nexus_call_latency_ms = int((time.monotonic() - _nexus_call_t0) * 1000)
+        _nexus_call_ctx = _nexus_mcp.get_context()
+        asyncio.create_task(_nexus_log_mcp_call_event(
+            'nexus_npm_package_ws_has_241560546_weekly_down_open_websocket_session', _nexus_call_success, _nexus_call_latency_ms, _nexus_call_ctx,
+            route_key='POST /ws-sessions/open',
+        ))
 
 @_nexus_mcp.tool(name='nexus_npm_package_ws_has_241560546_weekly_down_send_typed_ws_frame', description="Sends a single text or binary frame over an open session and returns the frame's Shannon entropy delta relative to the session baseline. Use for request-response patterns or publishing commands to a WebSocket server. Do NOT use to send a sequence of frames in bulk -- call this tool once per frame. Fails if session_id does not exist or connection is not in OPEN state.")
 async def send_typed_ws_frame(session_id: Annotated[str, Field(..., description='32-character session id (uuid4 hex, no dashes) returned by open_websocket_session.', min_length=32, max_length=32)], payload: Annotated[str, Field(..., description="Frame payload. For binary frames, encode as hex and set frame_type to 'binary'.", min_length=0, max_length=131072)], frame_type: Annotated[Literal['text', 'binary'], Field('text', description="Either 'text' or 'binary'. Determines wire encoding.")]) -> dict[str, Any]:
     """Send Typed WebSocket Frame"""
+    # --- PATCH mcp_call_events_retrofit ---
     _nexus_path = '/ws-sessions/{session_id}/send-frame'.format(session_id=session_id)
     params = {"payload": payload, "frame_type": frame_type}
-    return await _nexus_mcp_call_core('POST', _nexus_path, params)
+    _nexus_call_t0 = time.monotonic()
+    _nexus_call_success = True
+    try:
+        return await _nexus_mcp_call_core('POST', _nexus_path, params)
+    except Exception:
+        _nexus_call_success = False
+        raise
+    finally:
+        _nexus_call_latency_ms = int((time.monotonic() - _nexus_call_t0) * 1000)
+        _nexus_call_ctx = _nexus_mcp.get_context()
+        asyncio.create_task(_nexus_log_mcp_call_event(
+            'nexus_npm_package_ws_has_241560546_weekly_down_send_typed_ws_frame', _nexus_call_success, _nexus_call_latency_ms, _nexus_call_ctx,
+            route_key='POST /ws-sessions/{session_id}/send-frame',
+        ))
 
 @_nexus_mcp.tool(name='nexus_npm_package_ws_has_241560546_weekly_down_drain_ws_frame_buffer', description='Returns up to max_frames buffered inbound frames received since the last drain (or session open), each annotated with its Shannon entropy delta and schema validation result. Use to poll for incoming messages without holding a blocking connection. Do NOT use as a real-time streaming mechanism -- it returns only frames already buffered.')
 async def drain_ws_frame_buffer(session_id: Annotated[str, Field(..., description='32-character session id of the open session to drain frames from.', min_length=32, max_length=32)], max_frames: Annotated[float, Field(32, description='Maximum number of buffered frames to return in a single call.', ge=1, le=256)]) -> dict[str, Any]:
     """Drain WebSocket Frame Buffer"""
+    # --- PATCH mcp_call_events_retrofit ---
     _nexus_path = '/ws-sessions/{session_id}/drain-frames'.format(session_id=session_id)
     params = {"max_frames": max_frames}
-    return await _nexus_mcp_call_core('POST', _nexus_path, params)
+    _nexus_call_t0 = time.monotonic()
+    _nexus_call_success = True
+    try:
+        return await _nexus_mcp_call_core('POST', _nexus_path, params)
+    except Exception:
+        _nexus_call_success = False
+        raise
+    finally:
+        _nexus_call_latency_ms = int((time.monotonic() - _nexus_call_t0) * 1000)
+        _nexus_call_ctx = _nexus_mcp.get_context()
+        asyncio.create_task(_nexus_log_mcp_call_event(
+            'nexus_npm_package_ws_has_241560546_weekly_down_drain_ws_frame_buffer', _nexus_call_success, _nexus_call_latency_ms, _nexus_call_ctx,
+            route_key='POST /ws-sessions/{session_id}/drain-frames',
+        ))
 
 @_nexus_mcp.tool(name='nexus_npm_package_ws_has_241560546_weekly_down_inspect_ws_session_telemetry', description='Returns real-time telemetry for a session: connection state, frame counts, cumulative and rolling Shannon entropy statistics, schema violation rate, and uptime. Use to diagnose whether a stream is diverging from its expected schema or to verify a session is still alive before sending. Do NOT use as the primary liveness check in a tight loop.')
 async def inspect_ws_session_telemetry(session_id: Annotated[str, Field(..., description='32-character session id of the session to inspect.', min_length=32, max_length=32)]) -> dict[str, Any]:
     """Inspect WebSocket Session Telemetry"""
+    # --- PATCH mcp_call_events_retrofit ---
     _nexus_path = '/ws-sessions/{session_id}/telemetry'.format(session_id=session_id)
     params = {}
-    return await _nexus_mcp_call_core('POST', _nexus_path, params)
+    _nexus_call_t0 = time.monotonic()
+    _nexus_call_success = True
+    try:
+        return await _nexus_mcp_call_core('POST', _nexus_path, params)
+    except Exception:
+        _nexus_call_success = False
+        raise
+    finally:
+        _nexus_call_latency_ms = int((time.monotonic() - _nexus_call_t0) * 1000)
+        _nexus_call_ctx = _nexus_mcp.get_context()
+        asyncio.create_task(_nexus_log_mcp_call_event(
+            'nexus_npm_package_ws_has_241560546_weekly_down_inspect_ws_session_telemetry', _nexus_call_success, _nexus_call_latency_ms, _nexus_call_ctx,
+            route_key='POST /ws-sessions/{session_id}/telemetry',
+        ))
 
 @_nexus_mcp.tool(name='nexus_npm_package_ws_has_241560546_weekly_down_close_websocket_session', description='Sends a WebSocket close frame with the specified status code, waits for the server close handshake, and removes the session from the registry. Returns a final telemetry snapshot. Use when a session is no longer needed. Do NOT use to temporarily pause a session -- the session_id is permanently deallocated after this call and cannot be reused.')
 async def close_websocket_session(session_id: Annotated[str, Field(..., description='32-character session id of the session to close.', min_length=32, max_length=32)], status_code: Annotated[float, Field(1000, description='WebSocket close status code per RFC 6455 (1000-4999). Defaults to 1000.', ge=1000, le=4999)], reason: Annotated[str, Field('', description='Optional UTF-8 close reason string, max 123 bytes per RFC 6455.', max_length=123)]) -> dict[str, Any]:
     """Close WebSocket Session"""
+    # --- PATCH mcp_call_events_retrofit ---
     _nexus_path = '/ws-sessions/{session_id}/close'.format(session_id=session_id)
     params = {"status_code": status_code, "reason": reason}
-    return await _nexus_mcp_call_core('POST', _nexus_path, params)
+    _nexus_call_t0 = time.monotonic()
+    _nexus_call_success = True
+    try:
+        return await _nexus_mcp_call_core('POST', _nexus_path, params)
+    except Exception:
+        _nexus_call_success = False
+        raise
+    finally:
+        _nexus_call_latency_ms = int((time.monotonic() - _nexus_call_t0) * 1000)
+        _nexus_call_ctx = _nexus_mcp.get_context()
+        asyncio.create_task(_nexus_log_mcp_call_event(
+            'nexus_npm_package_ws_has_241560546_weekly_down_close_websocket_session', _nexus_call_success, _nexus_call_latency_ms, _nexus_call_ctx,
+            route_key='POST /ws-sessions/{session_id}/close',
+        ))
 
 
 # Crea el sub-app ASGI de streamable HTTP -- DEBE llamarse antes de
