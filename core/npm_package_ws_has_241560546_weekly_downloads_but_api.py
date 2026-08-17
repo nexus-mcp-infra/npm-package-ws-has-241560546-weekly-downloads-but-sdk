@@ -408,6 +408,26 @@ def _nexus_call_context(ctx):
     return ip_range, agent_framework
 
 
+# --- PATCH mcp_call_events_gc_fix ---
+# asyncio.create_task() sin guardar la referencia devuelta deja el
+# Task sostenido solo por una weak reference del event loop -- bajo
+# trafico real concurrente, CPython puede liberarlo por refcounting
+# antes de que el loop le de un solo tick (confirmado: 2/5361 filas
+# reales en produccion, ambas de verificacion manual de baja
+# concurrencia -- ver patch_mcp_call_events_gc_fix_generator.py).
+# Mismo patron que recomienda la doc oficial de asyncio para
+# fire-and-forget tasks: retener una referencia fuerte en un set a
+# nivel de modulo hasta que el Task termine.
+_nexus_bg_tasks: set = set()
+
+
+def _nexus_fire_and_forget(coro):
+    task = asyncio.create_task(coro)
+    _nexus_bg_tasks.add(task)
+    task.add_done_callback(_nexus_bg_tasks.discard)
+    return task
+
+
 async def _nexus_log_mcp_call_event(tool_id, success, latency_ms, ctx, route_key=None):
     """Escribe mcp_call_events (proxy de uso/latencia) siempre que haya
     credenciales -- dispara en el finally de cada tool MCP, antes de
@@ -1077,7 +1097,7 @@ async def open_websocket_session(target_url: Annotated[str, Field(..., descripti
     finally:
         _nexus_call_latency_ms = int((time.monotonic() - _nexus_call_t0) * 1000)
         _nexus_call_ctx = _nexus_mcp.get_context()
-        asyncio.create_task(_nexus_log_mcp_call_event(
+        _nexus_fire_and_forget(_nexus_log_mcp_call_event(
             'nexus_npm_package_ws_has_241560546_weekly_down_open_websocket_session', _nexus_call_success, _nexus_call_latency_ms, _nexus_call_ctx,
             route_key='POST /ws-sessions/open',
         ))
@@ -1098,7 +1118,7 @@ async def send_typed_ws_frame(session_id: Annotated[str, Field(..., description=
     finally:
         _nexus_call_latency_ms = int((time.monotonic() - _nexus_call_t0) * 1000)
         _nexus_call_ctx = _nexus_mcp.get_context()
-        asyncio.create_task(_nexus_log_mcp_call_event(
+        _nexus_fire_and_forget(_nexus_log_mcp_call_event(
             'nexus_npm_package_ws_has_241560546_weekly_down_send_typed_ws_frame', _nexus_call_success, _nexus_call_latency_ms, _nexus_call_ctx,
             route_key='POST /ws-sessions/{session_id}/send-frame',
         ))
@@ -1119,7 +1139,7 @@ async def drain_ws_frame_buffer(session_id: Annotated[str, Field(..., descriptio
     finally:
         _nexus_call_latency_ms = int((time.monotonic() - _nexus_call_t0) * 1000)
         _nexus_call_ctx = _nexus_mcp.get_context()
-        asyncio.create_task(_nexus_log_mcp_call_event(
+        _nexus_fire_and_forget(_nexus_log_mcp_call_event(
             'nexus_npm_package_ws_has_241560546_weekly_down_drain_ws_frame_buffer', _nexus_call_success, _nexus_call_latency_ms, _nexus_call_ctx,
             route_key='POST /ws-sessions/{session_id}/drain-frames',
         ))
@@ -1140,7 +1160,7 @@ async def inspect_ws_session_telemetry(session_id: Annotated[str, Field(..., des
     finally:
         _nexus_call_latency_ms = int((time.monotonic() - _nexus_call_t0) * 1000)
         _nexus_call_ctx = _nexus_mcp.get_context()
-        asyncio.create_task(_nexus_log_mcp_call_event(
+        _nexus_fire_and_forget(_nexus_log_mcp_call_event(
             'nexus_npm_package_ws_has_241560546_weekly_down_inspect_ws_session_telemetry', _nexus_call_success, _nexus_call_latency_ms, _nexus_call_ctx,
             route_key='POST /ws-sessions/{session_id}/telemetry',
         ))
@@ -1161,7 +1181,7 @@ async def close_websocket_session(session_id: Annotated[str, Field(..., descript
     finally:
         _nexus_call_latency_ms = int((time.monotonic() - _nexus_call_t0) * 1000)
         _nexus_call_ctx = _nexus_mcp.get_context()
-        asyncio.create_task(_nexus_log_mcp_call_event(
+        _nexus_fire_and_forget(_nexus_log_mcp_call_event(
             'nexus_npm_package_ws_has_241560546_weekly_down_close_websocket_session', _nexus_call_success, _nexus_call_latency_ms, _nexus_call_ctx,
             route_key='POST /ws-sessions/{session_id}/close',
         ))
