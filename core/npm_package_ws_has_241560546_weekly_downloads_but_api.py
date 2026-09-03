@@ -316,8 +316,12 @@ from x402.extensions.bazaar import (
     declare_discovery_extension as _nexus_declare_discovery_extension,
 )
 
-_NEXUS_X402_EVM_ADDRESS = "0x70e9f8057bb50e31b6ee06958bcbbe7de9daa98f"
-_NEXUS_X402_NETWORK: Network = "eip155:84532"  # Base Sepolia (testnet) -- cambiar a eip155:8453 + facilitator mainnet para produccion
+# --- PATCH mainnet_cutover_ws ---
+# Wallet A canonica, ahora leida de env (fail-fast, sin default -- si falta el
+# deploy debe fallar en boot, no arrancar con un placeholder silencioso).
+# Facilitator ya era CDP desde patch_cdp_facilitator_bazaar_ws.py, sin cambios.
+_NEXUS_X402_EVM_ADDRESS = os.environ["NEXUS_X402_PAYTO_ADDRESS"]
+_NEXUS_X402_NETWORK: Network = "eip155:8453"  # Base mainnet
 _NEXUS_X402_PRICE = "$0.01"
 
 # x402.org/facilitator nunca cataloga nada en el Bazaar de Coinbase -- el CDP
